@@ -34,26 +34,56 @@ from inspect import signature
 from .datasets import road_transforms
 from .datasets.road_dataset import RoadDataset
 
+from inspect import signature
+from torch.utils.data import random_split
+from .datasets.road_dataset import RoadDataset
+from .datasets import road_transforms
+
 def _make_datasets(transform_pipeline: str = "state_only"):
+    # pick the right transform for this part
     if transform_pipeline == "state_only":
-        # Inspect the constructor to see if it requires 'track'
-        params = signature(road_transforms.EgoTrackProcessor).parameters
-        if "track" in params:
-            transform = road_transforms.EgoTrackProcessor(
-                n_track=10,
-                n_waypoints=3,
-                track="both",   # <-- required in your version
-            )
-        else:
-            transform = road_transforms.EgoTrackProcessor(
-                n_track=10,
-                n_waypoints=3,
-            )
+        # your version needed `track="both"` earlier; keep it if required
+        try:
+            Ego = road_transforms.EgoTrackProcessor
+            if "track" in signature(Ego).parameters:
+                transform = Ego(n_track=10, n_waypoints=3, track="both")
+            else:
+                transform = Ego(n_track=10, n_waypoints=3)
+        except Exception as e:
+            raise RuntimeError(f"Failed to build EgoTrackProcessor: {e}")
     else:
         raise ValueError(f"Unknown transform_pipeline: {transform_pipeline}")
 
-    train_ds = RoadDataset(split="train", transform=transform)
-    val_ds   = RoadDataset(split="val",   transform=transform)
+    # Build datasets based on RoadDataset's actual signature
+    RD = RoadDataset
+    params = signature(RD).parameters
+
+    # Common cases across skeletons
+    try:
+        if "split" in params:
+            train_ds = RD(split="train", transform=transform)
+            val_ds   = RD(split="val",   transform=transform)
+        elif "subset" in params:
+            train_ds = RD(subset="train", transform=transform)
+            val_ds   = RD(subset="val",   transform=transform)
+        elif "is_train" in params:
+            train_ds = RD(is_train=True,  transform=transform)
+            val_ds   = RD(is_train=False, transform=transform)
+        else:
+            # No split args supported: create one full dataset and split it
+            full_ds = RD(transform=transform)
+            n = len(full_ds)
+            n_train = int(0.9 * n)
+            n_val = n - n_train
+            train_ds, val_ds = random_split(
+                full_ds, [n_train, n_val],
+                generator=torch.Generator().manual_seed(42)
+            )
+    except TypeError as e:
+        # Helpful message so you can see what args RD wants
+        raise TypeError(f"RoadDataset signature is {signature(RD)}; "
+                        f"adjust construction accordingly. Original error: {e}")
+
     return {"train": train_ds, "val": val_ds}
 
 def _collate_fn(batch):
