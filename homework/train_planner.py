@@ -30,29 +30,31 @@ def _get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _make_datasets(transform_pipeline: str = "state_only") -> Dict[str, RoadDataset]:
-    """
-    Build train/val datasets. We rely on the provided RoadDataset + transforms.
-    """
+from inspect import signature
+from .datasets import road_transforms
+from .datasets.road_dataset import RoadDataset
+
+def _make_datasets(transform_pipeline: str = "state_only"):
     if transform_pipeline == "state_only":
-        transform = road_transforms.EgoTrackProcessor(
-            n_track=10,          # as specified in the assignment
-            n_waypoints=3,
-            # add_noise=False,     # you can flip True for augmentation if you want
-        )
-    elif transform_pipeline == "image_only":
-        # Example image pipeline (for ViT); replace with your HW3 block if different
-        transform = road_transforms.ImageOnlyProcessor(
-            resize=(96, 128),
-            to_float=True,
-        )
+        # Inspect the constructor to see if it requires 'track'
+        params = signature(road_transforms.EgoTrackProcessor).parameters
+        if "track" in params:
+            transform = road_transforms.EgoTrackProcessor(
+                n_track=10,
+                n_waypoints=3,
+                track="both",   # <-- required in your version
+            )
+        else:
+            transform = road_transforms.EgoTrackProcessor(
+                n_track=10,
+                n_waypoints=3,
+            )
     else:
         raise ValueError(f"Unknown transform_pipeline: {transform_pipeline}")
 
     train_ds = RoadDataset(split="train", transform=transform)
     val_ds   = RoadDataset(split="val",   transform=transform)
     return {"train": train_ds, "val": val_ds}
-
 
 def _collate_fn(batch):
     """
