@@ -38,7 +38,7 @@ def _make_datasets(transform_pipeline: str = "state_only") -> Dict[str, RoadData
         transform = road_transforms.EgoTrackProcessor(
             n_track=10,          # as specified in the assignment
             n_waypoints=3,
-            add_noise=False,     # you can flip True for augmentation if you want
+            # add_noise=False,     # you can flip True for augmentation if you want
         )
     elif transform_pipeline == "image_only":
         # Example image pipeline (for ViT); replace with your HW3 block if different
