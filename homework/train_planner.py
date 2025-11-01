@@ -39,50 +39,62 @@ from torch.utils.data import random_split
 from .datasets.road_dataset import RoadDataset
 from .datasets import road_transforms
 
-def _make_datasets(transform_pipeline: str = "state_only"):
-    # pick the right transform for this part
-    if transform_pipeline == "state_only":
-        # your version needed `track="both"` earlier; keep it if required
-        try:
-            Ego = road_transforms.EgoTrackProcessor
-            if "track" in signature(Ego).parameters:
-                transform = Ego(n_track=10, n_waypoints=3, track="both")
-            else:
-                transform = Ego(n_track=10, n_waypoints=3)
-        except Exception as e:
-            raise RuntimeError(f"Failed to build EgoTrackProcessor: {e}")
-    else:
-        raise ValueError(f"Unknown transform_pipeline: {transform_pipeline}")
+from pathlib import Path
+from typing import Dict, List
+import torch
+from torch.utils.data import ConcatDataset, random_split
+from .datasets.road_dataset import RoadDataset
 
-    # Build datasets based on RoadDataset's actual signature
-    RD = RoadDataset
-    params = signature(RD).parameters
+def _discover_episode_paths(root: str | Path = "drive_data") -> List[Path]:
+    """
+    Finds episode paths inside drive_data/. Supports directory episodes or single files (e.g., .npz).
+    """
+    root = Path(root)
+    assert root.exists(), f"{root} not found. Did you unzip drive_data.zip in the repo root?"
 
-    # Common cases across skeletons
-    try:
-        if "split" in params:
-            train_ds = RD(split="train", transform=transform)
-            val_ds   = RD(split="val",   transform=transform)
-        elif "subset" in params:
-            train_ds = RD(subset="train", transform=transform)
-            val_ds   = RD(subset="val",   transform=transform)
-        elif "is_train" in params:
-            train_ds = RD(is_train=True,  transform=transform)
-            val_ds   = RD(is_train=False, transform=transform)
-        else:
-            # No split args supported: create one full dataset and split it
-            full_ds = RD(transform=transform)
-            n = len(full_ds)
-            n_train = int(0.9 * n)
-            n_val = n - n_train
-            train_ds, val_ds = random_split(
-                full_ds, [n_train, n_val],
-                generator=torch.Generator().manual_seed(42)
-            )
-    except TypeError as e:
-        # Helpful message so you can see what args RD wants
-        raise TypeError(f"RoadDataset signature is {signature(RD)}; "
-                        f"adjust construction accordingly. Original error: {e}")
+    eps: List[Path] = []
+
+    # Common layouts:
+    # - drive_data/<episode_dir>/
+    # - drive_data/<episode_file>.npz  (or similar)
+    for p in sorted(root.iterdir()):
+        if p.name.startswith("."):
+            continue
+        if p.is_dir():
+            eps.append(p)
+        elif p.is_file() and p.suffix.lower() in {".npz", ".pt", ".pth"}:
+            eps.append(p)
+
+    if not eps:
+        raise RuntimeError(f"No episodes found under {root}. Check your dataset unzip step.")
+    return eps
+
+def _make_datasets(transform_pipeline: str = "state_only") -> Dict[str, torch.utils.data.Dataset]:
+    """
+    Build train/val datasets for the RoadDataset signature:
+      RoadDataset(episode_path: str, transform_pipeline: str = 'default')
+    """
+    episodes = _discover_episode_paths("drive_data")
+
+    # 90/10 split
+    n = len(episodes)
+    n_train = max(1, int(0.9 * n))
+    train_eps = episodes[:n_train]
+    val_eps   = episodes[n_train:] if n_train < n else episodes[-1:]  # ensure non-empty val
+
+    # Build per-episode datasets
+    train_parts = [
+        RoadDataset(episode_path=str(ep), transform_pipeline=transform_pipeline)
+        for ep in train_eps
+    ]
+    val_parts = [
+        RoadDataset(episode_path=str(ep), transform_pipeline=transform_pipeline)
+        for ep in val_eps
+    ]
+
+    # Concatenate
+    train_ds = train_parts[0] if len(train_parts) == 1 else ConcatDataset(train_parts)
+    val_ds   = val_parts[0]   if len(val_parts)   == 1 else ConcatDataset(val_parts)
 
     return {"train": train_ds, "val": val_ds}
 
